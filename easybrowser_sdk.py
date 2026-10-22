@@ -261,6 +261,22 @@ class EasyBrowserAPI:
         except ValueError as exc:
             raise RuntimeError(f"Invalid JSON response from {self.base}{path}: {exc}") from exc
 
+    def _post_raw(self, path, data=None):
+        """POST 并返回原始响应 dict（不校验 code，供需要判断 msg 的调用方使用）。"""
+        try:
+            r = requests.post(
+                f"{self.base}{path}",
+                json=data,
+                headers=self.headers,
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(format_api_unavailable_error(self.base, exc)) from exc
+        try:
+            return r.json()
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid JSON response from {self.base}{path}: {exc}") from exc
+
     def create_container(self, name, **kw):
         return self._post("/api/v1/container/create", {"name": name, **kw})
 
@@ -314,12 +330,20 @@ class EasyBrowserAPI:
         return self._post("/api/v1/container/restore", {"ids": ids})
 
     def delete_permanently(self, env_ids):
-        """Permanently delete containers and their browser data (incl. cookies). Irreversible."""
+        """Permanently delete containers and their browser data (incl. cookies). Irreversible.
+
+        Calls /api/v1/container/delete_permanently; falls back to the legacy
+        /api/v1/container/purge when talking to older clients that only expose purge.
+        """
         if isinstance(env_ids, str):
             ids = [env_ids]
         else:
             ids = list(env_ids)
-        return self._post("/api/v1/container/delete_permanently", {"ids": ids})
+        res = self._post_raw("/api/v1/container/delete_permanently", {"ids": ids})
+        # 老客户端没有新路由，会返回 {"code":-1,"msg":"not found"}，回退到旧别名 purge
+        if res.get("code") != 0 and "not found" in str(res.get("msg", "")).lower():
+            res = self._post_raw("/api/v1/container/purge", {"ids": ids})
+        return self._check(res)
 
     def trash_list(self):
         return self._get("/api/v1/container/trash")
